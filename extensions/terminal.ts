@@ -379,10 +379,10 @@ export default function (pi: ExtensionAPI) {
 
   function updateStatus(ctx: any) {
     if (pty.error) {
-      ctx.ui.setStatus("pi-terminal", "\x1b[31m⬛ term\x1b[0m");
+      ctx.ui.setStatus("pi-persistent-term", "\x1b[31m⬛ term\x1b[0m");
     } else {
       const ctxOff = autoInjectContext ? "" : " \x1b[2m(ctx off)\x1b[0m";
-      ctx.ui.setStatus("pi-terminal", `\x1b[32m⬛ term\x1b[0m${ctxOff}`);
+      ctx.ui.setStatus("pi-persistent-term", `\x1b[32m⬛ term\x1b[0m${ctxOff}`);
     }
   }
 
