@@ -1,8 +1,14 @@
 {
   "name": "pi-terminal",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Integrated terminal panel for pi coding agent — persistent PTY shell, colored overlay, LLM tools",
-  "keywords": ["pi-package", "pi-extension", "terminal", "pty", "shell"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "terminal",
+    "pty",
+    "shell"
+  ],
   "license": "MIT",
   "author": "kowsari",
   "repository": {
@@ -22,6 +28,8 @@
     "postinstall": "node -e \"try{require('node-pty');console.log('node-pty: prebuild OK')}catch(e){console.warn('node-pty prebuild failed, rebuilding from source...');require('child_process').execSync('npm rebuild node-pty',{stdio:'inherit',cwd:__dirname})}\" || true"
   },
   "pi": {
-    "extensions": ["./extensions/terminal.ts"]
+    "extensions": [
+      "./extensions/terminal.ts"
+    ]
   }
 }
