@@ -1,0 +1,21 @@
+{
+  "name": "pi-terminal",
+  "version": "0.1.0",
+  "description": "Integrated terminal panel for pi coding agent — read/write a persistent shell, inject terminal context into LLM prompts",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "dependencies": {
+    "node-pty": "^1.0.0"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "scripts": {
+    "postinstall": "node -e \"try{require('node-pty');console.log('node-pty: prebuild OK')}catch(e){console.warn('node-pty prebuild failed, rebuilding from source...');require('child_process').execSync('npm rebuild node-pty',{stdio:'inherit',cwd:__dirname})}\" || true"
+  },
+  "pi": {
+    "extensions": ["./extensions/terminal.ts"]
+  }
+}
