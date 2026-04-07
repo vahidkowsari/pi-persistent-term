@@ -1,5 +1,5 @@
 {
-  "name": "pi-terminal",
+  "name": "pi-persistent-term",
   "version": "0.1.2",
   "description": "Integrated terminal panel for pi coding agent — persistent PTY shell, colored overlay, LLM tools",
   "keywords": [
@@ -13,7 +13,7 @@
   "author": "kowsari",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kowsari/pi-terminal"
+    "url": "https://github.com/kowsari/pi-persistent-term"
   },
   "dependencies": {
     "@xterm/headless": "^5.5.0",

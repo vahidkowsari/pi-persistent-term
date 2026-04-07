@@ -1,4 +1,4 @@
-# pi-terminal
+# pi-persistent-term
 
 Integrated terminal panel for the [pi coding agent](https://github.com/badlogic/pi-mono). Provides a persistent PTY shell inside pi — state (cwd, virtualenvs, environment variables) survives across calls, unlike pi's built-in `bash` tool which spawns a fresh subshell each time.
 
@@ -14,8 +14,8 @@ Integrated terminal panel for the [pi coding agent](https://github.com/badlogic/
 ## Installation
 
 ```bash
-git clone https://github.com/kowsari/pi-terminal
-cd pi-terminal
+git clone https://github.com/kowsari/pi-persistent-term
+cd pi-persistent-term
 npm install
 pi install .
 ```
