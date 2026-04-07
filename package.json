@@ -1,10 +1,16 @@
 {
   "name": "pi-terminal",
   "version": "0.1.0",
-  "description": "Integrated terminal panel for pi coding agent — read/write a persistent shell, inject terminal context into LLM prompts",
-  "keywords": ["pi-package"],
+  "description": "Integrated terminal panel for pi coding agent — persistent PTY shell, colored overlay, LLM tools",
+  "keywords": ["pi-package", "pi-extension", "terminal", "pty", "shell"],
   "license": "MIT",
+  "author": "kowsari",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kowsari/pi-terminal"
+  },
   "dependencies": {
+    "@xterm/headless": "^5.5.0",
     "node-pty": "^1.0.0"
   },
   "peerDependencies": {

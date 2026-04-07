@@ -9,10 +9,8 @@ import { truncateToWidth } from "@mariozechner/pi-tui";
 const _pkgDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const _require = createRequire(resolve(_pkgDir, "package.json"));
 
-// Resolve @xterm/headless from pi-interactive-shell since it's not in our deps
-const _xtermRequire = createRequire(
-  resolve("/opt/homebrew/lib/node_modules/pi-interactive-shell", "package.json"),
-);
+// @xterm/headless is a direct dependency — resolve from our own node_modules
+const _xtermRequire = _require;
 
 // ─── ANSI reconstruction from xterm cells (for colored display) ───────────────
 
@@ -202,6 +200,8 @@ class PtyManager {
   get error(): string | null { return this._error; }
   get pid(): number | null { return this.pty?.pid ?? null; }
 
+  clearError(): void { this._error = null; }
+
   start(cwd: string, cols: number, rows: number): void {
     if (this.pty) return;
     try {
@@ -336,7 +336,7 @@ export default function (pi: ExtensionAPI) {
 
   function ensurePty(): boolean {
     if (pty.isRunning) return true;
-    if (pty.error) return false;
+    if (pty.error) return false; // sticky until /term-restart
     const cols = getTermCols();
     const rows = getTermRows();
     if (!xterm) xterm = new XtermBuffer(cols, rows);
@@ -404,7 +404,7 @@ export default function (pi: ExtensionAPI) {
       if (overlayOpen) { ctx.ui.notify("Terminal is already open — press Ctrl+Q to close it", "info"); return; }
       if (!ensurePty()) {
         ctx.ui.notify(`Terminal unavailable: ${pty.error}`, "error");
-        ctx.ui.notify("Run: cd ~/workspace/kowsari/pi-terminal && npm install", "info");
+        ctx.ui.notify("Run /term-restart to retry, or check that node-pty is installed", "info");
         return;
       }
 
@@ -441,6 +441,24 @@ export default function (pi: ExtensionAPI) {
       xterm?.clear();
       simple.clear();
       ctx.ui.notify("Terminal buffer cleared", "info");
+    },
+  });
+
+  pi.registerCommand("term-restart", {
+    description: "Restart the terminal shell process",
+    handler: async (_args, ctx) => {
+      if (overlayOpen) {
+        ctx.ui.notify("Close the terminal overlay first (Ctrl+Q)", "warning");
+        return;
+      }
+      pty.kill();
+      pty.clearError();
+      if (ensurePty()) {
+        ctx.ui.notify("Terminal restarted", "info");
+      } else {
+        ctx.ui.notify(`Terminal failed to start: ${pty.error}`, "error");
+      }
+      updateStatus(ctx);
     },
   });
 
