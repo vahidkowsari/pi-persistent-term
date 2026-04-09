@@ -540,7 +540,7 @@ export default function (pi: ExtensionAPI) {
       command: Type.String({ description: "Shell command to run" }),
       wait_ms: Type.Optional(Type.Number({ description: "Maximum milliseconds to wait for the command to finish (default: 15000)." })),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, _signal, onUpdate) {
       if (!ensurePty()) {
         return {
           content: [{ type: "text" as const, text: pty.error ? `Terminal failed to start: ${pty.error}` : "Terminal shell is not running" }],
@@ -550,6 +550,9 @@ export default function (pi: ExtensionAPI) {
 
       const linesBefore = simple.lineCount;
       const sentinel = `__PI_DONE_${Date.now()}_${Math.random().toString(36).slice(2, 8)}__`;
+
+      // Show the command immediately before any output arrives
+      onUpdate?.({ content: [{ type: "text" as const, text: `$ ${params.command}` }], details: undefined });
 
       pty.write(params.command + "\n");
       pty.write(`echo '${sentinel}'\n`);
@@ -561,6 +564,18 @@ export default function (pi: ExtensionAPI) {
         await new Promise((r) => setTimeout(r, 50));
         const newLines = simple.getLinesFrom(linesBefore);
         const sentinelIdx = newLines.findIndex((l) => l.trim() === sentinel);
+
+        // Stream live output while waiting for sentinel
+        if (onUpdate) {
+          const liveLines = newLines
+            .slice(0, sentinelIdx === -1 ? undefined : sentinelIdx)
+            .filter((l) => { const t = l.trim(); return t !== "" && !t.includes(sentinel); });
+          onUpdate({
+            content: [{ type: "text" as const, text: `$ ${params.command}\n${liveLines.join("\n")}` }],
+            details: undefined,
+          });
+        }
+
         if (sentinelIdx !== -1) {
           const output = newLines
             .slice(0, sentinelIdx)

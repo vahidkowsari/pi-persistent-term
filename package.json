@@ -1,6 +1,6 @@
 {
   "name": "pi-persistent-term",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Integrated terminal panel for pi coding agent — persistent PTY shell, colored overlay, LLM tools",
   "keywords": [
     "pi-package",
