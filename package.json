@@ -13,7 +13,7 @@
   "author": "kowsari",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kowsari/pi-persistent-term"
+    "url": "git+https://github.com/kowsari/pi-persistent-term.git"
   },
   "dependencies": {
     "@xterm/headless": "^5.5.0",
