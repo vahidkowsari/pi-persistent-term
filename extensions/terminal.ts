@@ -2,8 +2,11 @@ import { createRequire } from "node:module";
 import { platform } from "node:os";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { StringEnum } from "@mariozechner/pi-ai";
 import { truncateToWidth } from "@mariozechner/pi-tui";
 
 const _pkgDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -185,6 +188,90 @@ class SimpleBuffer {
   }
 }
 
+// ─── Monitor Manager ─────────────────────────────────────────────────────────
+//
+// Spawns a child process independently of the PTY and streams its stdout/stderr
+// into the pi conversation. In react mode each flush triggers a new LLM turn so
+// Claude can respond to output in real-time without polling.
+
+type MonitorFlushCallback = (output: string, exited: boolean, exitCode?: number | null) => void;
+
+class MonitorManager {
+  private proc: ChildProcess | null = null;
+  private buffer = "";
+  private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private _command = "";
+  private _react = false;
+  private _onFlush: MonitorFlushCallback;
+
+  get isRunning(): boolean { return this.proc !== null; }
+  get command(): string { return this._command; }
+  get react(): boolean { return this._react; }
+
+  constructor(onFlush: MonitorFlushCallback) { this._onFlush = onFlush; }
+
+  start(command: string, cwd: string, react: boolean): void {
+    this._command = command;
+    this._react = react;
+    this.buffer = "";
+
+    const shell = process.env.SHELL ?? (platform() === "win32" ? "cmd.exe" : "/bin/bash");
+    this.proc = spawn(shell, ["-c", command], {
+      cwd,
+      env: process.env as Record<string, string>,
+    });
+
+    const onData = (data: Buffer) => {
+      this.buffer += data.toString();
+      if (this.buffer.length >= 4096) this.doFlush(false);
+    };
+    this.proc.stdout?.on("data", onData);
+    this.proc.stderr?.on("data", onData);
+
+    this.proc.on("close", (code: number | null) => {
+      if (!this.proc) return; // already stopped via stop()
+      if (this.flushTimer) { clearInterval(this.flushTimer); this.flushTimer = null; }
+      this.proc = null;
+      this.doFlush(true, code);
+      this._command = "";
+    });
+
+    this.proc.on("error", (err: Error) => {
+      if (!this.proc) return;
+      this.buffer += `[monitor error: ${err.message}]`;
+      if (this.flushTimer) { clearInterval(this.flushTimer); this.flushTimer = null; }
+      this.proc = null;
+      this.doFlush(true, -1);
+      this._command = "";
+    });
+
+    this.flushTimer = setInterval(() => this.doFlush(false), 750);
+  }
+
+  private doFlush(exited: boolean, exitCode?: number | null): void {
+    const content = this.buffer;
+    this.buffer = "";
+    if (content || exited) this._onFlush(content, exited, exitCode);
+  }
+
+  // Returns the command that was running. Nulls proc before kill so the exit
+  // handler's guard prevents a double-flush.
+  stop(): string {
+    const cmd = this._command;
+    if (this.flushTimer) { clearInterval(this.flushTimer); this.flushTimer = null; }
+    const proc = this.proc;
+    this.proc = null;
+    this._command = "";
+    this._react = false;  // prevent react flush triggering a turn on explicit stop
+    // flush remaining buffer (not as exited — caller handles the notification)
+    const content = this.buffer;
+    this.buffer = "";
+    if (content) this._onFlush(content, false);
+    try { proc?.kill(); } catch {}
+    return cmd;
+  }
+}
+
 // ─── PTY Manager ──────────────────────────────────────────────────────────────
 
 type DataListener = (data: string) => void;
@@ -328,8 +415,43 @@ export default function (pi: ExtensionAPI) {
   let overlayOpen = false;
   let overlayDone: ((result?: unknown) => void) | null = null;
   let sessionCwd = process.cwd();
+  let sessionCtx: any = null; // captured for use in async monitor callbacks
   let unsubData: (() => void) | null = null;
   let unsubExit: (() => void) | null = null;
+
+  // Monitor — flush callback runs outside any event handler so we use sessionCtx
+  const monitor = new MonitorManager((output, exited, exitCode) => {
+    if (output) simple.append(output);
+
+    if (exited) {
+      const note = exitCode === 0
+        ? "[monitor: process exited cleanly (code 0)]"
+        : `[monitor: process exited with code ${exitCode ?? "unknown"}]`;
+      simple.append("\n" + note);
+      const level = exitCode === 0 ? "info" : "warning";
+      sessionCtx?.ui.notify(`Monitor: ${note}`, level);
+      if (sessionCtx) updateStatus(sessionCtx);
+
+      if (monitor.react) {
+        pi.sendMessage({
+          customType: "monitor-output",
+          content: (output ? output + "\n" : "") + note,
+          display: true,
+          details: { command: monitor.command, exited: true, exitCode },
+        }, { triggerTurn: true });
+      }
+      return;
+    }
+
+    if (output && monitor.react) {
+      pi.sendMessage({
+        customType: "monitor-output",
+        content: output,
+        display: true,
+        details: { command: monitor.command, exited: false },
+      }, { triggerTurn: true });
+    }
+  });
 
   function getTermCols(): number { return Math.max(80, (process.stdout.columns ?? 120) - 2); }
   function getTermRows(): number { return Math.max(10, Math.floor((process.stdout.rows ?? 40) * 0.55) - 4); }
@@ -346,6 +468,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     sessionCwd = ctx.cwd;
+    sessionCtx = ctx;
 
     unsubData?.();
     unsubExit?.();
@@ -375,15 +498,23 @@ export default function (pi: ExtensionAPI) {
     unsubData = null;
     unsubExit = null;
     pty.kill();
+    if (monitor.isRunning) monitor.stop();
   });
 
   function updateStatus(ctx: any) {
+    let status: string;
     if (pty.error) {
-      ctx.ui.setStatus("pi-persistent-term", "\x1b[31m⬛ term\x1b[0m");
+      status = "\x1b[31m⬛ term\x1b[0m";
     } else {
       const ctxOff = autoInjectContext ? "" : " \x1b[2m(ctx off)\x1b[0m";
-      ctx.ui.setStatus("pi-persistent-term", `\x1b[32m⬛ term\x1b[0m${ctxOff}`);
+      status = `\x1b[32m⬛ term\x1b[0m${ctxOff}`;
     }
+    if (monitor.isRunning) {
+      const cmd = monitor.command.length > 24 ? monitor.command.slice(0, 24) + "…" : monitor.command;
+      const reactBadge = monitor.react ? " \x1b[33m⚡react\x1b[0m" : "";
+      status += ` \x1b[33m●\x1b[0m \x1b[2m${cmd}\x1b[0m${reactBadge}`;
+    }
+    ctx.ui.setStatus("pi-persistent-term", status);
   }
 
   pi.on("before_agent_start", async (event, _ctx) => {
@@ -471,9 +602,78 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("monitor-stop", {
+    description: "Stop the currently monitored background process",
+    handler: async (_args, ctx) => {
+      if (!monitor.isRunning) {
+        ctx.ui.notify("No monitor is running", "info");
+        return;
+      }
+      const cmd = monitor.stop();
+      updateStatus(ctx);
+      ctx.ui.notify(`Monitor stopped: ${cmd}`, "info");
+    },
+  });
+
   pi.registerShortcut("ctrl+`", {
     description: "Open terminal panel",
     handler: async (_ctx) => { pi.sendUserMessage("/term", { deliverAs: "followUp" }); },
+  });
+
+  pi.registerTool({
+    name: "monitor_process",
+    label: "Monitor Process",
+    description:
+      "Start or stop background monitoring of a shell command's stdout/stderr. " +
+      "In react mode (react=true) each chunk of output is pushed into the conversation " +
+      "and triggers a new LLM turn so you can respond in real-time — no polling needed. " +
+      "In silent mode (react=false, default) output is buffered quietly and readable via read_terminal. " +
+      "Only one monitor can run at a time. Use action='stop' to kill it.",
+    promptSnippet: "Monitor a long-running process; optionally react to output in real-time",
+    parameters: Type.Object({
+      action: StringEnum(["start", "stop", "status"] as const, { description: '"start" | "stop" | "status"' }),
+      command: Type.Optional(Type.String({ description: "Shell command to monitor (required for start)" })),
+      react: Type.Optional(Type.Boolean({ description: "Push output into conversation and trigger LLM turns in real-time (default: false)" })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (params.action === "status") {
+        if (!monitor.isRunning) {
+          return { content: [{ type: "text" as const, text: "No monitor running." }], details: {} };
+        }
+        return {
+          content: [{ type: "text" as const, text: `Monitoring: ${monitor.command}\nMode: ${monitor.react ? "react (triggers LLM turns)" : "silent (buffered)"}` }],
+          details: { command: monitor.command, react: monitor.react },
+        };
+      }
+
+      if (params.action === "stop") {
+        if (!monitor.isRunning) {
+          return { content: [{ type: "text" as const, text: "No monitor is running." }], details: {} };
+        }
+        const cmd = monitor.stop();
+        updateStatus(ctx);
+        return { content: [{ type: "text" as const, text: `Stopped monitoring: ${cmd}` }], details: { command: cmd } };
+      }
+
+      // action === "start"
+      if (!params.command?.trim()) {
+        throw new Error('"command" is required for action=start');
+      }
+      if (monitor.isRunning) {
+        throw new Error(`Already monitoring: "${monitor.command}" — stop it first with action="stop"`);
+      }
+
+      monitor.start(params.command, sessionCwd, params.react ?? false);
+      updateStatus(ctx);
+
+      const mode = params.react
+        ? "react mode — output will be pushed into the conversation and trigger new turns"
+        : "silent mode — output is buffered, use read_terminal to check or set react=true";
+      return {
+        content: [{ type: "text" as const, text: `Monitoring started: ${params.command}\n${mode}` }],
+        details: { command: params.command, react: params.react ?? false },
+      };
+    },
   });
 
   pi.registerTool({
