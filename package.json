@@ -10,10 +10,25 @@
     "shell"
   ],
   "license": "MIT",
-  "author": "kowsari",
+  "author": "vahidkowsari",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kowsari/pi-persistent-term.git"
+    "url": "git+https://github.com/vahidkowsari/pi-persistent-term.git"
+  },
+  "homepage": "https://github.com/vahidkowsari/pi-persistent-term#readme",
+  "bugs": {
+    "url": "https://github.com/vahidkowsari/pi-persistent-term/issues"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@xterm/headless": "^5.5.0",

@@ -14,7 +14,7 @@ Integrated terminal panel for the [pi coding agent](https://github.com/badlogic/
 ## Installation
 
 ```bash
-git clone https://github.com/kowsari/pi-persistent-term
+git clone https://github.com/vahidkowsari/pi-persistent-term
 cd pi-persistent-term
 npm install
 pi install .
