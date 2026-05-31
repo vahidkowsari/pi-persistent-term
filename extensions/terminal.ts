@@ -17,14 +17,14 @@ const _xtermRequire = _require;
 
 // ─── ANSI reconstruction from xterm cells (for colored display) ───────────────
 
-interface CellAttrs {
+export interface CellAttrs {
   fgDefault: boolean; fgRGB: boolean; fgPalette: boolean; fgColor: number;
   bgDefault: boolean; bgRGB: boolean; bgPalette: boolean; bgColor: number;
   bold: boolean; dim: boolean; italic: boolean; underline: boolean;
   inverse: boolean; strikethrough: boolean;
 }
 
-function defaultAttrs(): CellAttrs {
+export function defaultAttrs(): CellAttrs {
   return {
     fgDefault: true, fgRGB: false, fgPalette: false, fgColor: -1,
     bgDefault: true, bgRGB: false, bgPalette: false, bgColor: -1,
@@ -33,7 +33,7 @@ function defaultAttrs(): CellAttrs {
   };
 }
 
-function attrsEqual(a: CellAttrs, b: CellAttrs): boolean {
+export function attrsEqual(a: CellAttrs, b: CellAttrs): boolean {
   return (
     a.fgDefault === b.fgDefault && a.fgRGB === b.fgRGB &&
     a.fgPalette === b.fgPalette && a.fgColor === b.fgColor &&
@@ -45,7 +45,7 @@ function attrsEqual(a: CellAttrs, b: CellAttrs): boolean {
   );
 }
 
-function buildSgr(attrs: CellAttrs): string {
+export function buildSgr(attrs: CellAttrs): string {
   const codes: number[] = [0];
   if (attrs.bold) codes.push(1);
   if (attrs.dim) codes.push(2);
@@ -137,7 +137,7 @@ class XtermBuffer {
 // line-by-line for small output — new lines overwrite existing viewport rows.
 // This simple append buffer handles sentinel detection and LLM context reliably.
 
-class SimpleBuffer {
+export class SimpleBuffer {
   private lines: string[] = [""];
   private _hasContent = false;
 
