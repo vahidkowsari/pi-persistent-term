@@ -426,6 +426,15 @@ export function formatExitStatus(exitCode: number | null): string {
   return exitCode === null ? "" : `\n[exit code: ${exitCode}]`;
 }
 
+/** Captured PTY lines reduced to real output: drops blank lines and any line
+ *  carrying the sentinel (the echoed `echo …` command and the marker itself). */
+export function extractOutput(lines: string[], sentinel: string): string {
+  return lines
+    .filter((l) => { const t = l.trim(); return t !== "" && !t.includes(sentinel); })
+    .join("\n")
+    .trimEnd();
+}
+
 // ─── Extension Entry Point ─────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -440,6 +449,15 @@ export default function (pi: ExtensionAPI) {
   let sessionCtx: any = null; // captured for use in async monitor callbacks
   let unsubData: (() => void) | null = null;
   let unsubExit: (() => void) | null = null;
+
+  // A run_in_terminal command launched with background:true. It occupies the
+  // PTY shell's foreground, so only one can run at a time. The watcher polls
+  // for its completion sentinel and notifies when it exits.
+  let bgRun: { command: string; sentinel: string; startLine: number; timer: ReturnType<typeof setInterval> | null } | null = null;
+  function stopBgWatcher() {
+    if (bgRun?.timer) clearInterval(bgRun.timer);
+    bgRun = null;
+  }
 
   // Monitor — flush callback runs outside any event handler so we use sessionCtx
   const monitor = new MonitorManager((output, exited, exitCode) => {
@@ -503,6 +521,7 @@ export default function (pi: ExtensionAPI) {
 
     unsubExit = pty.onExit(() => {
       ctx.ui.notify("Terminal: shell process exited", "warning");
+      stopBgWatcher();
       // Close the overlay if open so user isn't stuck with a dead shell
       if (overlayOpen && overlayDone) {
         overlayDone();
@@ -519,6 +538,7 @@ export default function (pi: ExtensionAPI) {
     unsubExit?.();
     unsubData = null;
     unsubExit = null;
+    stopBgWatcher();
     pty.kill();
     if (monitor.isRunning) monitor.stop();
   });
@@ -535,6 +555,10 @@ export default function (pi: ExtensionAPI) {
       const cmd = monitor.command.length > 24 ? monitor.command.slice(0, 24) + "…" : monitor.command;
       const reactBadge = monitor.react ? " \x1b[33m⚡react\x1b[0m" : "";
       status += ` \x1b[33m●\x1b[0m \x1b[2m${cmd}\x1b[0m${reactBadge}`;
+    }
+    if (bgRun) {
+      const cmd = bgRun.command.length > 24 ? bgRun.command.slice(0, 24) + "…" : bgRun.command;
+      status += ` \x1b[36m⏵\x1b[0m \x1b[2m${cmd}\x1b[0m \x1b[36mbg\x1b[0m`;
     }
     ctx.ui.setStatus("pi-persistent-term", status);
   }
@@ -710,7 +734,9 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params) {
       const n = Math.min(params.lines ?? 100, 500);
-      const context = simple.getContext(n);
+      let context = simple.getContext(n);
+      // Hide the pending completion sentinel of a running background command.
+      if (bgRun) context = context.split("\n").filter((l) => !l.includes(bgRun!.sentinel)).join("\n").trimEnd();
       return {
         content: [{ type: "text" as const, text: context || "(terminal buffer is empty — nothing has been run yet)" }],
         details: { totalLines: simple.lineCount, returned: n },
@@ -756,13 +782,18 @@ export default function (pi: ExtensionAPI) {
     description:
       "Run a shell command in the integrated terminal and capture its output and exit code. " +
       "Unlike the bash tool, this runs in the user's persistent shell session " +
-      "(same environment, history, active virtualenvs, etc.).",
+      "(same environment, history, active virtualenvs, etc.). " +
+      "Set background=true for long-lived commands (dev servers, watchers): the command " +
+      "runs in the SAME persistent shell (keeping cwd/virtualenv, unlike monitor_process) " +
+      "and the tool returns immediately. Read its output later with read_terminal and stop " +
+      "it with write_terminal(\"\\x03\"); you are notified when it exits.",
     promptSnippet: "Run a command in the user's terminal and get output",
     parameters: Type.Object({
       command: Type.String({ description: "Shell command to run" }),
-      wait_ms: Type.Optional(Type.Number({ description: "Maximum milliseconds to wait for the command to finish (default: 15000)." })),
+      wait_ms: Type.Optional(Type.Number({ description: "Maximum milliseconds to wait for the command to finish (default: 15000). Ignored when background=true." })),
+      background: Type.Optional(Type.Boolean({ description: "Run in the persistent shell and return immediately instead of waiting. Only one background command at a time (it holds the shell's foreground)." })),
     }),
-    async execute(_id, params, _signal, onUpdate) {
+    async execute(_id, params, _signal, onUpdate, ctx) {
       if (!ensurePty()) {
         return {
           content: [{ type: "text" as const, text: pty.error ? `Terminal failed to start: ${pty.error}` : "Terminal shell is not running" }],
@@ -770,8 +801,52 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
+      // The shell has a single foreground; a background command blocks it.
+      if (bgRun) {
+        return {
+          content: [{ type: "text" as const, text: `A background command is already running in the shell: "${bgRun.command}". Stop it first with write_terminal("\\x03"), then retry.` }],
+          details: { backgroundBusy: true, command: bgRun.command }, isError: true,
+        };
+      }
+
       const linesBefore = simple.lineCount;
       const sentinel = `__PI_DONE_${Date.now()}_${Math.random().toString(36).slice(2, 8)}__`;
+
+      if (params.background) {
+        // Single atomic write so the command and its sentinel can't interleave.
+        // The echo only runs once the command exits (or is interrupted), so the
+        // watcher fires on natural exit AND on a later Ctrl+C (exit 130).
+        pty.write(`${params.command}\necho "${sentinel}:$?"\n`);
+        await new Promise((r) => setTimeout(r, 500)); // capture immediate output/errors
+        const early = extractOutput(simple.getLinesFrom(linesBefore), sentinel);
+
+        bgRun = { command: params.command, sentinel, startLine: linesBefore, timer: null };
+        bgRun.timer = setInterval(() => {
+          if (!bgRun) return;
+          const lines = simple.getLinesFrom(bgRun.startLine);
+          const idx = findSentinelIndex(lines, bgRun.sentinel);
+          if (idx === -1) return;
+          const exitCode = parseExitCode(lines[idx]!);
+          const output = extractOutput(lines.slice(0, idx), bgRun.sentinel);
+          const cmd = bgRun.command;
+          stopBgWatcher();
+          if (sessionCtx) updateStatus(sessionCtx);
+          const note = `[background command finished: ${cmd}${formatExitStatus(exitCode)}]`;
+          sessionCtx?.ui.notify(`Terminal: ${note}`, exitCode === 0 ? "info" : "warning");
+          pi.sendMessage({
+            customType: "background-run",
+            content: (output ? output + "\n" : "") + note,
+            display: true,
+            details: { command: cmd, exitCode, background: true },
+          }, { triggerTurn: true });
+        }, 500);
+
+        updateStatus(ctx);
+        return {
+          content: [{ type: "text" as const, text: `$ ${params.command} &\nStarted in the persistent shell — running in background.\n${early || "(no output yet)"}\n\nUse read_terminal to check progress, write_terminal("\\x03") to stop. You'll be notified when it exits.` }],
+          details: { background: true, command: params.command },
+        };
+      }
 
       // Show the command immediately before any output arrives
       onUpdate?.({ content: [{ type: "text" as const, text: `$ ${params.command}` }], details: undefined });
@@ -791,22 +866,16 @@ export default function (pi: ExtensionAPI) {
 
         // Stream live output while waiting for sentinel
         if (onUpdate) {
-          const liveLines = newLines
-            .slice(0, sentinelIdx === -1 ? undefined : sentinelIdx)
-            .filter((l) => { const t = l.trim(); return t !== "" && !t.includes(sentinel); });
+          const live = extractOutput(newLines.slice(0, sentinelIdx === -1 ? undefined : sentinelIdx), sentinel);
           onUpdate({
-            content: [{ type: "text" as const, text: `$ ${params.command}\n${liveLines.join("\n")}` }],
+            content: [{ type: "text" as const, text: `$ ${params.command}\n${live}` }],
             details: undefined,
           });
         }
 
         if (sentinelIdx !== -1) {
           const exitCode = parseExitCode(newLines[sentinelIdx]!);
-          const output = newLines
-            .slice(0, sentinelIdx)
-            .filter((l) => { const t = l.trim(); return t !== "" && !t.includes(sentinel); })
-            .join("\n")
-            .trimEnd();
+          const output = extractOutput(newLines.slice(0, sentinelIdx), sentinel);
           const status = formatExitStatus(exitCode);
           return {
             content: [{ type: "text" as const, text: `$ ${params.command}\n${output || "(no output)"}${status}` }],
