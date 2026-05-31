@@ -732,7 +732,7 @@ export default function (pi: ExtensionAPI) {
     name: "run_in_terminal",
     label: "Run in Terminal",
     description:
-      "Run a shell command in the integrated terminal and capture its output. " +
+      "Run a shell command in the integrated terminal and capture its output and exit code. " +
       "Unlike the bash tool, this runs in the user's persistent shell session " +
       "(same environment, history, active virtualenvs, etc.).",
     promptSnippet: "Run a command in the user's terminal and get output",
@@ -755,7 +755,9 @@ export default function (pi: ExtensionAPI) {
       onUpdate?.({ content: [{ type: "text" as const, text: `$ ${params.command}` }], details: undefined });
 
       pty.write(params.command + "\n");
-      pty.write(`echo '${sentinel}'\n`);
+      // Double quotes so $? expands — captures the command's exit code, which
+      // the PTY otherwise gives us no way to observe.
+      pty.write(`echo "${sentinel}:$?"\n`);
 
       const maxWaitMs = params.wait_ms ?? 15_000;
       const deadline = Date.now() + maxWaitMs;
@@ -763,7 +765,9 @@ export default function (pi: ExtensionAPI) {
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 50));
         const newLines = simple.getLinesFrom(linesBefore);
-        const sentinelIdx = newLines.findIndex((l) => l.trim() === sentinel);
+        // Sentinel line is "<sentinel>:<exitcode>"; the echoed command line
+        // starts with "echo" so startsWith(sentinel) matches only the output.
+        const sentinelIdx = newLines.findIndex((l) => l.trim().startsWith(sentinel));
 
         // Stream live output while waiting for sentinel
         if (onUpdate) {
@@ -777,14 +781,19 @@ export default function (pi: ExtensionAPI) {
         }
 
         if (sentinelIdx !== -1) {
+          const m = newLines[sentinelIdx]!.trim().match(/:(-?\d+)\s*$/);
+          const exitCode = m ? parseInt(m[1]!, 10) : null;
           const output = newLines
             .slice(0, sentinelIdx)
             .filter((l) => { const t = l.trim(); return t !== "" && !t.includes(sentinel); })
             .join("\n")
             .trimEnd();
+          const status =
+            exitCode === null ? "" : exitCode === 0 ? "\n[exit code: 0]" : `\n[exit code: ${exitCode}]`;
           return {
-            content: [{ type: "text" as const, text: `$ ${params.command}\n${output || "(no output)"}` }],
-            details: { linesAdded: newLines.length, completed: true },
+            content: [{ type: "text" as const, text: `$ ${params.command}\n${output || "(no output)"}${status}` }],
+            details: { linesAdded: newLines.length, completed: true, exitCode },
+            isError: exitCode !== null && exitCode !== 0,
           };
         }
       }
