@@ -71,7 +71,7 @@ monitor_process(action="status")
 
 ### `run_in_terminal`
 
-Runs a command in the persistent PTY shell and waits for it to complete (sentinel-based). Returns the full output. Best for commands that finish — `npm install`, `pytest`, `git status`, etc.
+Runs a command in the persistent PTY shell and waits for it to complete (sentinel-based). Returns the full output **and the command's exit code** (`[exit code: N]` in the result, `exitCode` in `details`; a non-zero code marks the tool result as an error). Best for commands that finish — `npm install`, `pytest`, `git status`, etc.
 
 ```
 run_in_terminal("npm install")

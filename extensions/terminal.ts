@@ -17,14 +17,14 @@ const _xtermRequire = _require;
 
 // ─── ANSI reconstruction from xterm cells (for colored display) ───────────────
 
-interface CellAttrs {
+export interface CellAttrs {
   fgDefault: boolean; fgRGB: boolean; fgPalette: boolean; fgColor: number;
   bgDefault: boolean; bgRGB: boolean; bgPalette: boolean; bgColor: number;
   bold: boolean; dim: boolean; italic: boolean; underline: boolean;
   inverse: boolean; strikethrough: boolean;
 }
 
-function defaultAttrs(): CellAttrs {
+export function defaultAttrs(): CellAttrs {
   return {
     fgDefault: true, fgRGB: false, fgPalette: false, fgColor: -1,
     bgDefault: true, bgRGB: false, bgPalette: false, bgColor: -1,
@@ -33,7 +33,7 @@ function defaultAttrs(): CellAttrs {
   };
 }
 
-function attrsEqual(a: CellAttrs, b: CellAttrs): boolean {
+export function attrsEqual(a: CellAttrs, b: CellAttrs): boolean {
   return (
     a.fgDefault === b.fgDefault && a.fgRGB === b.fgRGB &&
     a.fgPalette === b.fgPalette && a.fgColor === b.fgColor &&
@@ -45,7 +45,7 @@ function attrsEqual(a: CellAttrs, b: CellAttrs): boolean {
   );
 }
 
-function buildSgr(attrs: CellAttrs): string {
+export function buildSgr(attrs: CellAttrs): string {
   const codes: number[] = [0];
   if (attrs.bold) codes.push(1);
   if (attrs.dim) codes.push(2);
@@ -137,7 +137,7 @@ class XtermBuffer {
 // line-by-line for small output — new lines overwrite existing viewport rows.
 // This simple append buffer handles sentinel detection and LLM context reliably.
 
-class SimpleBuffer {
+export class SimpleBuffer {
   private lines: string[] = [""];
   private _hasContent = false;
 
@@ -277,7 +277,7 @@ class MonitorManager {
 type DataListener = (data: string) => void;
 type ExitListener = () => void;
 
-class PtyManager {
+export class PtyManager {
   private pty: any = null;
   private dataListeners: DataListener[] = [];
   private exitListeners: ExitListener[] = [];
@@ -402,6 +402,28 @@ class TerminalComponent {
   }
 
   invalidate(): void {}
+}
+
+// ─── run_in_terminal sentinel helpers (exported for tests) ─────────────────────
+//
+// run_in_terminal echoes `<sentinel>:$?` after the command so we can detect
+// completion AND read the exit code (the PTY exposes no exit signal).
+
+/** Index of the sentinel *output* line. The echoed command line starts with
+ *  "echo" so startsWith(sentinel) matches only the real output. -1 if absent. */
+export function findSentinelIndex(lines: string[], sentinel: string): number {
+  return lines.findIndex((l) => l.trim().startsWith(sentinel));
+}
+
+/** Exit code from a "<sentinel>:<code>" line, or null if it can't be parsed. */
+export function parseExitCode(sentinelLine: string): number | null {
+  const m = sentinelLine.trim().match(/:(-?\d+)\s*$/);
+  return m ? parseInt(m[1]!, 10) : null;
+}
+
+/** Human-readable status suffix for the tool result ("" when code unknown). */
+export function formatExitStatus(exitCode: number | null): string {
+  return exitCode === null ? "" : `\n[exit code: ${exitCode}]`;
 }
 
 // ─── Extension Entry Point ─────────────────────────────────────────────────────
@@ -732,7 +754,7 @@ export default function (pi: ExtensionAPI) {
     name: "run_in_terminal",
     label: "Run in Terminal",
     description:
-      "Run a shell command in the integrated terminal and capture its output. " +
+      "Run a shell command in the integrated terminal and capture its output and exit code. " +
       "Unlike the bash tool, this runs in the user's persistent shell session " +
       "(same environment, history, active virtualenvs, etc.).",
     promptSnippet: "Run a command in the user's terminal and get output",
@@ -755,7 +777,9 @@ export default function (pi: ExtensionAPI) {
       onUpdate?.({ content: [{ type: "text" as const, text: `$ ${params.command}` }], details: undefined });
 
       pty.write(params.command + "\n");
-      pty.write(`echo '${sentinel}'\n`);
+      // Double quotes so $? expands — captures the command's exit code, which
+      // the PTY otherwise gives us no way to observe.
+      pty.write(`echo "${sentinel}:$?"\n`);
 
       const maxWaitMs = params.wait_ms ?? 15_000;
       const deadline = Date.now() + maxWaitMs;
@@ -763,7 +787,7 @@ export default function (pi: ExtensionAPI) {
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 50));
         const newLines = simple.getLinesFrom(linesBefore);
-        const sentinelIdx = newLines.findIndex((l) => l.trim() === sentinel);
+        const sentinelIdx = findSentinelIndex(newLines, sentinel);
 
         // Stream live output while waiting for sentinel
         if (onUpdate) {
@@ -777,14 +801,17 @@ export default function (pi: ExtensionAPI) {
         }
 
         if (sentinelIdx !== -1) {
+          const exitCode = parseExitCode(newLines[sentinelIdx]!);
           const output = newLines
             .slice(0, sentinelIdx)
             .filter((l) => { const t = l.trim(); return t !== "" && !t.includes(sentinel); })
             .join("\n")
             .trimEnd();
+          const status = formatExitStatus(exitCode);
           return {
-            content: [{ type: "text" as const, text: `$ ${params.command}\n${output || "(no output)"}` }],
-            details: { linesAdded: newLines.length, completed: true },
+            content: [{ type: "text" as const, text: `$ ${params.command}\n${output || "(no output)"}${status}` }],
+            details: { linesAdded: newLines.length, completed: true, exitCode },
+            isError: exitCode !== null && exitCode !== 0,
           };
         }
       }

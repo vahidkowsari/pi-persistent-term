@@ -14,8 +14,11 @@ A [pi coding agent](https://github.com/badlogic/pi-mono) extension that adds a p
 
 ## Build / run
 
-- **No build step.** pi loads `extensions/terminal.ts` directly (TypeScript via the host's loader). Do not add a bundler or compile step unless asked.
-- **No tests.** There is no test runner configured. If a change needs verification, do it by running pi against the extension (`pi install .` then exercise the tools) and say so explicitly — don't claim a fix is verified when it isn't.
+- **No bundler/emit step.** pi loads `extensions/terminal.ts` directly (TypeScript via the host's loader). The "build" is a type-check only — `npm run typecheck` (`tsc --noEmit`). Do not add a bundler or compile-to-JS step unless asked.
+- **Tests** run with Vitest: `npm test` (or `npm run test:watch`). `npm run check` does typecheck + tests. Two kinds live under `test/`:
+  - *Unit* tests over pure exported helpers/classes (`SimpleBuffer`, the ANSI SGR builder, the `run_in_terminal` sentinel/exit-code parsing).
+  - *Integration* tests (`pty.integration.test.ts`) that drive a **real `node-pty` shell** — sentinel round-trip, real exit codes, cwd/env persistence. They force `process.env.SHELL=/bin/sh` (the user's interactive zsh + plugins redraw the input line and make injected commands non-deterministic) and `describe.skip` themselves if node-pty can't load.
+- When adding logic worth testing, prefer extracting a small **exported pure function/class** in `terminal.ts` (keeps the single-file convention) and add cases under `test/`. The TUI overlay (`TerminalComponent`) and the LLM-tool wiring still aren't covered — verify those by running pi (`pi install .` then exercise the tools).
 - `postinstall` rebuilds `node-pty` from source if the prebuilt binary fails to load. Leave this alone unless debugging install issues.
 
 ## Architecture notes (the non-obvious bits)
