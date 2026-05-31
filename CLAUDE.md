@@ -14,8 +14,9 @@ A [pi coding agent](https://github.com/badlogic/pi-mono) extension that adds a p
 
 ## Build / run
 
-- **No build step.** pi loads `extensions/terminal.ts` directly (TypeScript via the host's loader). Do not add a bundler or compile step unless asked.
-- **No tests.** There is no test runner configured. If a change needs verification, do it by running pi against the extension (`pi install .` then exercise the tools) and say so explicitly — don't claim a fix is verified when it isn't.
+- **No bundler/emit step.** pi loads `extensions/terminal.ts` directly (TypeScript via the host's loader). The "build" is a type-check only — `npm run typecheck` (`tsc --noEmit`). Do not add a bundler or compile-to-JS step unless asked.
+- **Tests** run with Vitest: `npm test` (or `npm run test:watch`). `npm run check` does typecheck + tests. Tests cover the *pure* helpers (e.g. the `run_in_terminal` sentinel/exit-code parsing in `extensions/terminal.ts`); anything needing a live PTY/`node-pty` shell still can't be unit-tested — verify those by running pi (`pi install .` then exercise the tools) and say so explicitly rather than claiming verification you don't have.
+- When adding logic worth testing, extract it as a small **exported pure function** in `terminal.ts` (keeps the single-file convention) and add cases under `test/`.
 - `postinstall` rebuilds `node-pty` from source if the prebuilt binary fails to load. Leave this alone unless debugging install issues.
 
 ## Architecture notes (the non-obvious bits)

@@ -404,6 +404,28 @@ class TerminalComponent {
   invalidate(): void {}
 }
 
+// ─── run_in_terminal sentinel helpers (exported for tests) ─────────────────────
+//
+// run_in_terminal echoes `<sentinel>:$?` after the command so we can detect
+// completion AND read the exit code (the PTY exposes no exit signal).
+
+/** Index of the sentinel *output* line. The echoed command line starts with
+ *  "echo" so startsWith(sentinel) matches only the real output. -1 if absent. */
+export function findSentinelIndex(lines: string[], sentinel: string): number {
+  return lines.findIndex((l) => l.trim().startsWith(sentinel));
+}
+
+/** Exit code from a "<sentinel>:<code>" line, or null if it can't be parsed. */
+export function parseExitCode(sentinelLine: string): number | null {
+  const m = sentinelLine.trim().match(/:(-?\d+)\s*$/);
+  return m ? parseInt(m[1]!, 10) : null;
+}
+
+/** Human-readable status suffix for the tool result ("" when code unknown). */
+export function formatExitStatus(exitCode: number | null): string {
+  return exitCode === null ? "" : `\n[exit code: ${exitCode}]`;
+}
+
 // ─── Extension Entry Point ─────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -765,9 +787,7 @@ export default function (pi: ExtensionAPI) {
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 50));
         const newLines = simple.getLinesFrom(linesBefore);
-        // Sentinel line is "<sentinel>:<exitcode>"; the echoed command line
-        // starts with "echo" so startsWith(sentinel) matches only the output.
-        const sentinelIdx = newLines.findIndex((l) => l.trim().startsWith(sentinel));
+        const sentinelIdx = findSentinelIndex(newLines, sentinel);
 
         // Stream live output while waiting for sentinel
         if (onUpdate) {
@@ -781,15 +801,13 @@ export default function (pi: ExtensionAPI) {
         }
 
         if (sentinelIdx !== -1) {
-          const m = newLines[sentinelIdx]!.trim().match(/:(-?\d+)\s*$/);
-          const exitCode = m ? parseInt(m[1]!, 10) : null;
+          const exitCode = parseExitCode(newLines[sentinelIdx]!);
           const output = newLines
             .slice(0, sentinelIdx)
             .filter((l) => { const t = l.trim(); return t !== "" && !t.includes(sentinel); })
             .join("\n")
             .trimEnd();
-          const status =
-            exitCode === null ? "" : exitCode === 0 ? "\n[exit code: 0]" : `\n[exit code: ${exitCode}]`;
+          const status = formatExitStatus(exitCode);
           return {
             content: [{ type: "text" as const, text: `$ ${params.command}\n${output || "(no output)"}${status}` }],
             details: { linesAdded: newLines.length, completed: true, exitCode },
