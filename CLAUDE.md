@@ -32,7 +32,9 @@ When changing how terminal data is captured or read, update **both** paths (PTY 
 
 `MonitorManager` runs a **separate** `child_process` (not the PTY). It does not inherit the PTY shell's state (cwd changes inside the shell, active virtualenvs). It uses `sessionCwd` and `process.env`.
 
-`run_in_terminal` uses a sentinel echo (`__PI_DONE_…__`) to detect command completion, since the PTY has no exit-code signal.
+`run_in_terminal` uses a sentinel echo (`__PI_DONE_…__:$?`) to detect command completion **and the exit code**, since the PTY has no exit-code signal. The echo is written in the same payload as the command, so it also fires after a Ctrl+C (reporting exit 130).
+
+`run_in_terminal` with `background:true` runs in the **same PTY shell** (keeps cwd/venv, unlike `MonitorManager`) but holds the shell's single foreground — so only one background command runs at a time (tracked by `bgRun`), and a normal `run_in_terminal`/background call is rejected while one is active. A polling watcher detects the sentinel, notifies, and pushes a `triggerTurn` message on exit. `read_terminal` scrubs the pending sentinel line while a background command is live. The watcher is cleared on completion, PTY exit, and session shutdown.
 
 Peer deps (`@mariozechner/pi-coding-agent`, `pi-ai`, `pi-tui`, `@sinclair/typebox`) are provided by the host pi install. Don't move them into `dependencies`.
 

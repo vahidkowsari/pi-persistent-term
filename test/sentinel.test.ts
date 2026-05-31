@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { findSentinelIndex, parseExitCode, formatExitStatus } from "../extensions/terminal.ts";
+import { findSentinelIndex, parseExitCode, formatExitStatus, extractOutput } from "../extensions/terminal.ts";
 
 const SENT = "__PI_DONE_1700000000000_abc123__";
 
@@ -53,5 +53,24 @@ describe("formatExitStatus", () => {
 
   it("renders nothing when the code is unknown", () => {
     expect(formatExitStatus(null)).toBe("");
+  });
+});
+
+describe("extractOutput", () => {
+  it("drops blank lines and any line carrying the sentinel", () => {
+    const lines = [`echo "${SENT}:$?"`, "hello", "", "world", `${SENT}:0`];
+    expect(extractOutput(lines, SENT)).toBe("hello\nworld");
+  });
+
+  it("preserves order and joins with newlines", () => {
+    expect(extractOutput(["a", "b", "c"], SENT)).toBe("a\nb\nc");
+  });
+
+  it("trims trailing blank output", () => {
+    expect(extractOutput(["a", "", ""], SENT)).toBe("a");
+  });
+
+  it("returns empty string when there is nothing to keep", () => {
+    expect(extractOutput([`${SENT}:0`, ""], SENT)).toBe("");
   });
 });

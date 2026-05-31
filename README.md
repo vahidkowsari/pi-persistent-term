@@ -78,6 +78,17 @@ run_in_terminal("npm install")
 run_in_terminal("pytest tests/", wait_ms=60000)
 ```
 
+**Background mode** — set `background=true` for long-lived commands (dev servers, watchers). The command runs in the **same persistent shell** (keeping cwd and active virtualenv, unlike `monitor_process` which uses a separate child process) and the tool returns immediately with any early output. Read progress later with `read_terminal`, stop it with `write_terminal("\x03")`; you're notified (and a turn is triggered) when it exits.
+
+```
+run_in_terminal("source .venv/bin/activate", )   # state persists...
+run_in_terminal("flask run", background=True)     # ...so this dev server has the venv
+read_terminal()                                   # check it later
+write_terminal("\x03")                            # stop it
+```
+
+Only one background command at a time — it holds the shell's foreground, so a second `run_in_terminal` call returns an error until you stop it.
+
 ### `write_terminal`
 
 Sends raw text or keypresses to the shell. Use for interactive prompts.
@@ -100,11 +111,12 @@ read_terminal(lines=100)
 | | `bash` tool | `run_in_terminal` | `monitor_process` |
 |---|---|---|---|
 | Shell state | Fresh subshell | Persistent PTY | Own child process |
-| Blocking | Yes | Yes (sentinel) | No — background |
-| Output delivery | On completion | On completion | Push (react) or buffer |
-| Infinite processes | ❌ timeout only | ❌ timeout only | ✅ natural fit |
-| LLM reacts in real-time | ❌ | ❌ | ✅ react mode |
-| Best for | Stateless one-offs | Stateful commands | Watchers, log monitors |
+| Blocking | Yes | Yes (sentinel), or `background=true` | No — background |
+| Output delivery | On completion | On completion / read later (bg) | Push (react) or buffer |
+| Infinite processes | ❌ timeout only | ✅ `background=true` (in the persistent shell) | ✅ separate process |
+| Keeps shell state (cwd/venv) | ❌ | ✅ (incl. background) | ❌ separate process |
+| LLM reacts in real-time | ❌ | On exit (bg triggers a turn) | ✅ react mode |
+| Best for | Stateless one-offs | Stateful commands; dev servers needing the venv | Watchers, log monitors |
 
 ## Requirements
 

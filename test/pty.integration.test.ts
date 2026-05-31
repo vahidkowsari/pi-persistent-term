@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
-import { PtyManager, SimpleBuffer, findSentinelIndex, parseExitCode } from "../extensions/terminal.ts";
+import { PtyManager, SimpleBuffer, findSentinelIndex, parseExitCode, extractOutput } from "../extensions/terminal.ts";
 
 // Force a clean POSIX shell for the PTY. The user's interactive $SHELL (zsh
 // with autosuggest/syntax-highlight plugins) redraws the input line with
@@ -142,5 +142,29 @@ d("run_in_terminal sentinel protocol — live PTY", () => {
     await run("cd /");
     const { output } = await run("pwd");
     expect(output.trim()).toBe("/");
+  }, 15000);
+
+  // Mirrors what background:true run_in_terminal does: fire the command +
+  // sentinel without waiting, then a watcher polls for completion. Verifies the
+  // sentinel is absent while the command is still running and resolves with the
+  // right exit code + output once it exits.
+  it("detects completion of a slow command asynchronously (background mechanism)", async () => {
+    const linesBefore = simple.lineCount;
+    const sentinel = `__PI_BG_${Math.random().toString(36).slice(2, 8)}__`;
+    pty.write(`(sleep 0.4; echo finished)\necho "${sentinel}:$?"\n`);
+
+    await new Promise((r) => setTimeout(r, 100)); // still running
+    expect(findSentinelIndex(simple.getLinesFrom(linesBefore), sentinel)).toBe(-1);
+
+    const deadline = Date.now() + 5000;
+    let idx = -1;
+    while (Date.now() < deadline && idx === -1) {
+      await new Promise((r) => setTimeout(r, 50));
+      idx = findSentinelIndex(simple.getLinesFrom(linesBefore), sentinel);
+    }
+    expect(idx).toBeGreaterThan(-1);
+    const lines = simple.getLinesFrom(linesBefore);
+    expect(parseExitCode(lines[idx]!)).toBe(0);
+    expect(extractOutput(lines.slice(0, idx), sentinel)).toContain("finished");
   }, 15000);
 });
