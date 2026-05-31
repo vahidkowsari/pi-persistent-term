@@ -277,7 +277,7 @@ class MonitorManager {
 type DataListener = (data: string) => void;
 type ExitListener = () => void;
 
-class PtyManager {
+export class PtyManager {
   private pty: any = null;
   private dataListeners: DataListener[] = [];
   private exitListeners: ExitListener[] = [];
