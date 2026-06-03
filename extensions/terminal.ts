@@ -328,6 +328,83 @@ export class PtyManager {
   }
 }
 
+// ─── Kitty keyboard protocol → PTY byte translation ───────────────────────────
+//
+// The host TUI (pi-tui) enables the Kitty keyboard protocol (CSI > 7 u: flags
+// disambiguate + report-event-types + report-alternate-keys), falling back to
+// xterm modifyOtherKeys mode 2 on tmux. So when the overlay is open, modified
+// keys arrive as CSI-u / modifyOtherKeys sequences instead of the legacy
+// control bytes a plain PTY shell understands. Forwarding them raw makes Ctrl+C
+// not interrupt, Ctrl+Q not close the overlay, and Ctrl/Esc keys get typed
+// literally ("9;5u"). We translate them back to legacy bytes before writing.
+
+// CSI <codepoint>[:<shifted>[:<base>]] [;<modifiers>[:<event>]] u  (Kitty)
+const CSI_U_RE = /^\x1b\[(\d+)(?::(\d*))?(?::(\d+))?(?:;(\d+))?(?::(\d+))?u$/;
+// CSI 27 ; <modifiers> ; <codepoint> ~  (xterm modifyOtherKeys)
+const MODIFY_OTHER_KEYS_RE = /^\x1b\[27;(\d+);(\d+)~$/;
+
+/** True for a Kitty key-release event (event type 3). Releases must not reach
+ *  the shell or every keystroke would be doubled. */
+function isKeyReleaseEvent(data: string): boolean {
+  // Never misread bracketed-paste content as an event sequence.
+  if (data.includes("\x1b[200~")) return false;
+  return data.includes(":3u") || data.includes(":3~");
+}
+
+/** Translate a (codepoint, modifier bitmask) key event into the bytes a PTY
+ *  expects. Modifier bits: 1=shift, 2=alt, 4=ctrl (already de-biased). */
+function encodeKeyForPty(codepoint: number, mod: number, shiftedKey?: number): string {
+  const shift = (mod & 1) !== 0;
+  const alt = (mod & 2) !== 0;
+  const ctrl = (mod & 4) !== 0;
+
+  // Named keys → their legacy byte sequences.
+  switch (codepoint) {
+    case 13: return "\r";                    // Enter
+    case 9: return shift ? "\x1b[Z" : "\t";  // Tab / Shift+Tab
+    case 27: return "\x1b";                  // Escape
+    case 8: case 127: return "\x7f";         // Backspace
+  }
+
+  let out: string;
+  if (ctrl && codepoint >= 32 && codepoint < 128) {
+    // Legacy Ctrl mapping: Ctrl+A → 0x01, Ctrl+C → 0x03, Ctrl+[ → 0x1b, etc.
+    out = String.fromCharCode(codepoint & 0x1f);
+  } else {
+    const cp = shift && typeof shiftedKey === "number" ? shiftedKey : codepoint;
+    try { out = String.fromCodePoint(cp); } catch { return ""; }
+  }
+  // Alt/Meta is delivered to the shell as an ESC prefix.
+  return alt ? "\x1b" + out : out;
+}
+
+/**
+ * Translate one overlay input event into the bytes to forward to the PTY.
+ * Decodes Kitty CSI-u and xterm modifyOtherKeys sequences into legacy bytes;
+ * passes plain text and legacy escape sequences (arrows, PgUp/PgDn, …) through
+ * unchanged. Returns "" for key-release events, which must be dropped.
+ */
+export function decodeKeyForPty(data: string): string {
+  if (isKeyReleaseEvent(data)) return "";
+
+  const u = CSI_U_RE.exec(data);
+  if (u) {
+    const codepoint = parseInt(u[1]!, 10);
+    const shiftedKey = u[2] ? parseInt(u[2], 10) : undefined;
+    const mod = u[4] ? parseInt(u[4], 10) - 1 : 0;
+    return encodeKeyForPty(codepoint, mod, shiftedKey);
+  }
+
+  const m = MODIFY_OTHER_KEYS_RE.exec(data);
+  if (m) {
+    const mod = parseInt(m[1]!, 10) - 1;
+    const codepoint = parseInt(m[2]!, 10);
+    return encodeKeyForPty(codepoint, mod);
+  }
+
+  return data;
+}
+
 // ─── Terminal TUI Component ────────────────────────────────────────────────────
 
 const HEADER_LINES = 2;
@@ -353,6 +430,12 @@ class TerminalComponent {
   onNewData(): void { this.requestRenderFn?.(); }
 
   handleInput(data: string): void {
+    // Translate Kitty/modifyOtherKeys sequences back to legacy PTY bytes; the
+    // host TUI enables the Kitty keyboard protocol, so Ctrl+Q arrives as
+    // "\x1b[113;5u", Ctrl+C as "\x1b[99;5u", etc. (see decodeKeyForPty).
+    data = decodeKeyForPty(data);
+    if (data === "") return; // dropped key-release event
+
     if (data === "\x11") { setTimeout(() => this.onClose(), 0); return; }
 
     const vl = this.visibleLines;
