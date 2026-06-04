@@ -74,7 +74,9 @@ export function buildSgr(attrs: CellAttrs): string {
   return `\x1b[${codes.join(";")}m`;
 }
 
-function lineToAnsi(line: any, cell: any): string {
+// cursorCol >= 0 draws a block cursor by inverting that cell (the overlay has no
+// real hardware cursor — pi-tui owns it — so we paint one ourselves).
+function lineToAnsi(line: any, cell: any, cursorCol = -1): string {
   let result = "";
   let cur = defaultAttrs();
   for (let x = 0; x < line.length; x++) {
@@ -90,10 +92,13 @@ function lineToAnsi(line: any, cell: any): string {
       underline: !!cell.isUnderline(), inverse: !!cell.isInverse(),
       strikethrough: !!cell.isStrikethrough(),
     };
+    if (x === cursorCol) next.inverse = !next.inverse;
     if (!attrsEqual(cur, next)) { result += buildSgr(next); cur = next; }
     result += ch;
   }
   if (!attrsEqual(cur, defaultAttrs())) result += "\x1b[0m";
+  // trimEnd is safe even with a cursor on a trailing blank: the inverted cell is
+  // always followed by a reset SGR, so its space is never the last character.
   return result.trimEnd();
 }
 
@@ -117,18 +122,27 @@ class XtermBuffer {
 
   clear(): void { this.term.clear(); }
 
-  /** Lines from `start` to `end` rendered with ANSI colors, for the overlay */
-  getDisplayLines(start: number, end: number): string[] {
+  /** Lines from `start` to `end` rendered with ANSI colors, for the overlay.
+   *  cursorRow (absolute buffer index, -1 to disable) draws a block cursor. */
+  getDisplayLines(start: number, end: number, cursorRow = -1): string[] {
     const buf = this.term.buffer.active;
+    const cursorCol = buf.cursorX;
     const result: string[] = [];
     for (let i = start; i < end && i < buf.length; i++) {
       const line = buf.getLine(i);
-      result.push(line ? lineToAnsi(line, this._nullCell) : "");
+      const col = i === cursorRow ? cursorCol : -1;
+      result.push(line ? lineToAnsi(line, this._nullCell, col) : "");
     }
     return result;
   }
 
   get lineCount(): number { return this.term.buffer.active.length; }
+
+  /** Absolute buffer index of the cursor's row. */
+  get cursorRow(): number {
+    const buf = this.term.buffer.active;
+    return buf.baseY + buf.cursorY;
+  }
 }
 
 // ─── SimpleBuffer — plain-text line buffer for read_terminal / run_in_terminal ─
@@ -467,7 +481,9 @@ class TerminalComponent {
     const totalLines = this.xterm.lineCount;
     const endIdx = totalLines - this.scrollOffset;
     const startIdx = Math.max(0, endIdx - vl);
-    const visible = this.xterm.getDisplayLines(startIdx, endIdx);
+    // Only paint the cursor when live and not scrolled back through history.
+    const cursorRow = this.scrollOffset === 0 && this.pty.isRunning ? this.xterm.cursorRow : -1;
+    const visible = this.xterm.getDisplayLines(startIdx, endIdx, cursorRow);
     while (visible.length < vl) visible.unshift("");
 
     const lines: string[] = [];
