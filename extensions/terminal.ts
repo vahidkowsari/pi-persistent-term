@@ -356,13 +356,19 @@ export class PtyManager {
 const CSI_U_RE = /^\x1b\[(\d+)(?::(\d*))?(?::(\d+))?(?:;(\d+))?(?::(\d+))?u$/;
 // CSI 27 ; <modifiers> ; <codepoint> ~  (xterm modifyOtherKeys)
 const MODIFY_OTHER_KEYS_RE = /^\x1b\[27;(\d+);(\d+)~$/;
+// Extended functional keys (arrows, Home/End, F-keys, PgUp/PgDn, …). With
+// report-event-types enabled, these no longer arrive in legacy "CSI A" form —
+// they come as CSI [num] ; [mod][:event] <final>, final ∈ A-H/P-S/~. We must
+// normalize them back to legacy or the shell types "1A" instead of moving.
+const CSI_FUNC_RE = /^\x1b\[(\d+)?(?:;(\d+)(?::(\d+))?)?([ABCDEFHPQRS~])$/;
 
 /** True for a Kitty key-release event (event type 3). Releases must not reach
  *  the shell or every keystroke would be doubled. */
 function isKeyReleaseEvent(data: string): boolean {
   // Never misread bracketed-paste content as an event sequence.
   if (data.includes("\x1b[200~")) return false;
-  return data.includes(":3u") || data.includes(":3~");
+  // ":3" + a CSI-u / functional / tilde terminator marks a release event.
+  return /:3[ABCDEFHPQRSu~]$/.test(data);
 }
 
 /** Translate a (codepoint, modifier bitmask) key event into the bytes a PTY
@@ -381,10 +387,15 @@ function encodeKeyForPty(codepoint: number, mod: number, shiftedKey?: number): s
   }
 
   let out: string;
-  if (ctrl && codepoint >= 32 && codepoint < 128) {
-    // Legacy Ctrl mapping: Ctrl+A → 0x01, Ctrl+C → 0x03, Ctrl+[ → 0x1b, etc.
+  if (ctrl && (codepoint === 32 || (codepoint >= 64 && codepoint <= 95) || (codepoint >= 97 && codepoint <= 122))) {
+    // Legacy Ctrl mapping exists only for these: Ctrl+Space→NUL, Ctrl+@/A-Z/[\]^_
+    // and Ctrl+a-z. Ctrl+A → 0x01, Ctrl+C → 0x03, Ctrl+[ → 0x1b, etc.
     out = String.fromCharCode(codepoint & 0x1f);
+  } else if (ctrl && codepoint === 63) {
+    out = "\x7f"; // Ctrl+? → DEL
   } else {
+    // Ctrl over digits/most punctuation has no legacy byte — forward the bare
+    // key, else e.g. Ctrl+1 (49) would become 0x11 and close the overlay.
     const cp = shift && typeof shiftedKey === "number" ? shiftedKey : codepoint;
     try { out = String.fromCodePoint(cp); } catch { return ""; }
   }
@@ -414,6 +425,18 @@ export function decodeKeyForPty(data: string): string {
     const mod = parseInt(m[1]!, 10) - 1;
     const codepoint = parseInt(m[2]!, 10);
     return encodeKeyForPty(codepoint, mod);
+  }
+
+  const f = CSI_FUNC_RE.exec(data);
+  if (f) {
+    if (f[3] && parseInt(f[3], 10) === 3) return ""; // release event
+    const num = f[1] ?? "1";
+    const mod = f[2] ? parseInt(f[2], 10) - 1 : 0;
+    const final = f[4]!;
+    if (final === "~") return mod ? `\x1b[${num};${mod + 1}~` : `\x1b[${num}~`;
+    // F1-F4 use SS3 (ESC O P..S) in legacy form when unmodified.
+    if (mod === 0) return "PQRS".includes(final) ? `\x1bO${final}` : `\x1b[${final}`;
+    return `\x1b[1;${mod + 1}${final}`;
   }
 
   return data;

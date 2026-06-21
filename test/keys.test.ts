@@ -18,6 +18,11 @@ describe("decodeKeyForPty — Kitty CSI-u control keys", () => {
     expect(decodeKeyForPty("\x1b[91;5u")).toBe("\x1b");
     expect(decodeKeyForPty("\x1b[32;5u")).toBe("\x00");
   });
+
+  it("does not turn Ctrl+digit into a stray control byte (Ctrl+1 ≠ Ctrl+Q close)", () => {
+    expect(decodeKeyForPty("\x1b[49;5u")).toBe("1"); // would have been \x11
+    expect(decodeKeyForPty("\x1b[50;5u")).toBe("2"); // would have been \x12
+  });
 });
 
 describe("decodeKeyForPty — named keys", () => {
@@ -85,5 +90,50 @@ describe("decodeKeyForPty — release events and pass-through", () => {
   it("does not mistake bracketed paste for a release event", () => {
     const paste = "\x1b[200~99;5:3u\x1b[201~";
     expect(decodeKeyForPty(paste)).toBe(paste);
+  });
+});
+
+describe("decodeKeyForPty — extended functional keys (report-event-types)", () => {
+  it("normalizes arrow presses to legacy form (issue #17 regression)", () => {
+    expect(decodeKeyForPty("\x1b[1;1A")).toBe("\x1b[A");
+    expect(decodeKeyForPty("\x1b[1;1B")).toBe("\x1b[B");
+    expect(decodeKeyForPty("\x1b[1;1C")).toBe("\x1b[C");
+    expect(decodeKeyForPty("\x1b[1;1D")).toBe("\x1b[D");
+  });
+
+  it("drops arrow release events so keys aren't doubled", () => {
+    expect(decodeKeyForPty("\x1b[1;1:3A")).toBe("");
+    expect(decodeKeyForPty("\x1b[1;1:3C")).toBe("");
+  });
+
+  it("forwards arrow repeat events as presses", () => {
+    expect(decodeKeyForPty("\x1b[1;1:2A")).toBe("\x1b[A");
+  });
+
+  it("preserves modifiers on arrows in legacy form", () => {
+    expect(decodeKeyForPty("\x1b[1;5C")).toBe("\x1b[1;5C"); // Ctrl+Right
+    expect(decodeKeyForPty("\x1b[1;2D")).toBe("\x1b[1;2D"); // Shift+Left
+  });
+
+  it("normalizes Home/End", () => {
+    expect(decodeKeyForPty("\x1b[1;1H")).toBe("\x1b[H");
+    expect(decodeKeyForPty("\x1b[1;1F")).toBe("\x1b[F");
+  });
+
+  it("normalizes tilde keys (PgUp/PgDn/Delete) for the scroll path", () => {
+    expect(decodeKeyForPty("\x1b[5;1~")).toBe("\x1b[5~");  // PgUp
+    expect(decodeKeyForPty("\x1b[6;1~")).toBe("\x1b[6~");  // PgDn
+    expect(decodeKeyForPty("\x1b[5;2~")).toBe("\x1b[5;2~"); // Shift+PgUp
+    expect(decodeKeyForPty("\x1b[3;1~")).toBe("\x1b[3~");  // Delete
+  });
+
+  it("normalizes F1-F4 to SS3 when unmodified", () => {
+    expect(decodeKeyForPty("\x1b[1;1P")).toBe("\x1bOP");
+    expect(decodeKeyForPty("\x1b[1;3Q")).toBe("\x1b[1;3Q"); // Alt+F2 keeps CSI form
+  });
+
+  it("still passes legacy unmodified functional keys through unchanged", () => {
+    expect(decodeKeyForPty("\x1b[A")).toBe("\x1b[A");
+    expect(decodeKeyForPty("\x1b[5~")).toBe("\x1b[5~");
   });
 });
