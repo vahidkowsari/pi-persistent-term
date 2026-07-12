@@ -36,6 +36,8 @@ When changing how terminal data is captured or read, update **both** paths (PTY 
 
 `run_in_terminal` with `background:true` runs in the **same PTY shell** (keeps cwd/venv, unlike `MonitorManager`) but holds the shell's single foreground — so only one background command runs at a time (tracked by `bgRun`), and a normal `run_in_terminal`/background call is rejected while one is active. A polling watcher detects the sentinel, notifies, and pushes a `triggerTurn` message on exit. `read_terminal` scrubs the pending sentinel line while a background command is live. The watcher is cleared on completion, PTY exit, and session shutdown.
 
+The overlay's `handleInput` runs incoming keys through `decodeKeyForPty` before forwarding to the PTY. The host TUI (pi-tui) enables the **Kitty keyboard protocol** (`CSI > 7 u`), or xterm **modifyOtherKeys** mode 2 on tmux, so modified keys arrive as CSI-u / `CSI 27;…~` sequences — not the legacy control bytes a plain shell expects. Without translation, Ctrl+C won't interrupt, Ctrl+Q won't close the overlay, and Ctrl/Esc keys get typed literally (`9;5u`). `decodeKeyForPty` maps those back to legacy bytes, drops key-release events (flag 2 reports them), and passes plain text + legacy escape sequences (arrows, PgUp/PgDn) through untouched.
+
 Peer deps (`@mariozechner/pi-coding-agent`, `pi-ai`, `pi-tui`, `@sinclair/typebox`) are provided by the host pi install. Don't move them into `dependencies`.
 
 ## Conventions
